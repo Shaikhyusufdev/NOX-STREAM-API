@@ -91,3 +91,132 @@ public class SearchController {
 
             boolean hasMore = hasMore(next);
             Map<String, Object> pagination = new LinkedHashMap<>();
+            pagination.put("hasMore", hasMore);
+            pagination.put("nextPage", hasMore ? encodePage(next) : null);
+
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("success", true);
+            body.put("query", q.trim());
+            body.put("filter", filter);
+            body.put("count", results.size());
+            body.put("data", results);
+            body.put("pagination", pagination);
+            return ResponseEntity.ok(body);
+
+        } catch (SignInConfirmNotBotException e) {
+            log.warn("Source blocked this IP for search '{}'", q);
+            return error(HttpStatus.SERVICE_UNAVAILABLE, "SOURCE_BLOCKED",
+                    "The source temporarily blocked this server. Try again later.");
+        } catch (ExtractionException e) {
+            log.error("Search extraction failed for '{}'", q, e);
+            return error(HttpStatus.BAD_GATEWAY, "EXTRACTION_FAILED", "Could not complete the search.");
+        } catch (IOException e) {
+            log.error("Network error during search '{}'", q, e);
+            return error(HttpStatus.BAD_GATEWAY, "NETWORK_ERROR", "Network error while contacting the source.");
+        }
+    }
+
+    private static boolean hasMore(Page p) {
+        return p != null && (
+                (p.getUrl() != null && !p.getUrl().isEmpty())
+                        || (p.getIds() != null && !p.getIds().isEmpty()));
+    }
+
+    private static String encodePage(Page p) {
+        try {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("u", p.getUrl());
+            m.put("i", p.getId());
+            m.put("d", p.getIds());
+            m.put("c", p.getCookies());
+            m.put("b", p.getBody() == null ? null : Base64.getEncoder().encodeToString(p.getBody()));
+            return Base64.getUrlEncoder().withoutPadding().encodeToString(MAPPER.writeValueAsBytes(m));
+        } catch (JsonProcessingException e) {
+            return null;
+        }
+    }
+
+    private static Page decodePage(String token) {
+        try {
+            byte[] raw = Base64.getUrlDecoder().decode(token);
+            JsonNode n = MAPPER.readTree(raw);
+
+            String url = n.hasNonNull("u") ? n.get("u").asText() : null;
+            if (!isYoutubeUrl(url)) {
+                return null;
+            }
+            String id = n.hasNonNull("i") ? n.get("i").asText() : null;
+
+            List<String> ids = null;
+            if (n.hasNonNull("d")) {
+                ids = new ArrayList<>();
+                for (JsonNode x : n.get("d")) {
+                    ids.add(x.asText());
+                }
+            }
+
+            Map<String, String> cookies = new LinkedHashMap<>();
+            if (n.hasNonNull("c")) {
+                n.get("c").fields().forEachRemaining(
+                        e -> cookies.put(e.getKey(), e.getValue().asText()));
+            }
+
+            byte[] body = n.hasNonNull("b") ? Base64.getDecoder().decode(n.get("b").asText()) : null;
+
+            return new Page(url, id, ids, cookies.isEmpty() ? null : cookies, body);
+        } catch (IllegalArgumentException | IOException e) {
+            return null;
+        }
+    }
+
+    // The token comes from the client, so only YouTube hosts are accepted.
+    private static boolean isYoutubeUrl(String url) {
+        if (url == null) {
+            return false;
+        }
+        try {
+            URI u = URI.create(url);
+            String host = u.getHost();
+            return "https".equals(u.getScheme()) && host != null
+                    && (host.equals("youtube.com") || host.endsWith(".youtube.com"));
+        } catch (IllegalArgumentException e) {
+            return false;
+        }
+    }
+
+    private static Map<String, Object> toRow(StreamInfoItem s) {
+        String url = s.getUrl();
+        Matcher m = VIDEO_ID.matcher(url == null ? "" : url);
+        String videoId = m.find() ? m.group(1) : null;
+
+        String thumbnail = s.getThumbnails().stream()
+                .max(Comparator.comparingInt(Image::getHeight))
+                .map(Image::getUrl)
+                .orElse(null);
+
+        StreamType type = s.getStreamType();
+        boolean isLive = type == StreamType.LIVE_STREAM || type == StreamType.AUDIO_LIVE_STREAM;
+
+        Map<String, Object> row = new LinkedHashMap<>();
+        row.put("videoId", videoId);
+        row.put("title", s.getName());
+        row.put("uploader", s.getUploaderName());
+        row.put("thumbnail", thumbnail);
+        row.put("duration", s.getDuration() >= 0 ? s.getDuration() : null);
+        row.put("viewCount", s.getViewCount() >= 0 ? s.getViewCount() : null);
+        row.put("uploadDate", s.getTextualUploadDate());
+        row.put("isLive", isLive);
+        row.put("url", url);
+        return row;
+    }
+
+    private static ResponseEntity<Map<String, Object>> error(HttpStatus status, String code, String message) {
+        Map<String, Object> err = new LinkedHashMap<>();
+        err.put("code", code);
+        err.put("message", message);
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("success", false);
+        body.put("error", err);
+        return ResponseEntity.status(status).body(body);
+    }
+}
