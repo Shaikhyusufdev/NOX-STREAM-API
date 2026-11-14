@@ -1,7 +1,12 @@
 package com.nox.streamapi.controller;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
+import java.net.URI;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -10,6 +15,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.schabi.newpipe.extractor.Image;
 import org.schabi.newpipe.extractor.InfoItem;
+import org.schabi.newpipe.extractor.Page;
 import org.schabi.newpipe.extractor.ServiceList;
 import org.schabi.newpipe.extractor.exceptions.ExtractionException;
 import org.schabi.newpipe.extractor.exceptions.SignInConfirmNotBotException;
@@ -29,11 +35,13 @@ public class SearchController {
 
     private static final Logger log = LoggerFactory.getLogger(SearchController.class);
     private static final Pattern VIDEO_ID = Pattern.compile("[?&]v=([A-Za-z0-9_-]{11})");
+    private static final ObjectMapper MAPPER = new ObjectMapper();
 
     @GetMapping("/api/v1/search")
     public ResponseEntity<Map<String, Object>> search(
             @RequestParam(name = "q", required = false) String q,
-            @RequestParam(name = "filter", defaultValue = "all") String filter) {
+            @RequestParam(name = "filter", defaultValue = "all") String filter,
+            @RequestParam(name = "page", required = false) String page) {
 
         if (q == null || q.isBlank() || q.length() > 100) {
             return error(HttpStatus.BAD_REQUEST, "INVALID_QUERY",
@@ -53,71 +61,33 @@ public class SearchController {
         }
 
         try {
-            SearchInfo info = SearchInfo.getInfo(
-                    ServiceList.YouTube,
-                    ServiceList.YouTube.getSearchQHFactory().fromQuery(q.trim(), contentFilters, ""));
+            var handler = ServiceList.YouTube.getSearchQHFactory()
+                    .fromQuery(q.trim(), contentFilters, "");
+
+            List<InfoItem> items;
+            Page next;
+
+            if (page == null || page.isBlank()) {
+                SearchInfo info = SearchInfo.getInfo(ServiceList.YouTube, handler);
+                items = info.getRelatedItems();
+                next = info.getNextPage();
+            } else {
+                Page decoded = decodePage(page);
+                if (decoded == null) {
+                    return error(HttpStatus.BAD_REQUEST, "INVALID_PAGE",
+                            "The page token is not valid.");
+                }
+                var more = SearchInfo.getMoreItems(ServiceList.YouTube, handler, decoded);
+                items = more.getItems();
+                next = more.getNextPage();
+            }
 
             List<Map<String, Object>> results = new ArrayList<>();
-            for (InfoItem item : info.getRelatedItems()) {
+            for (InfoItem item : items) {
                 if (item instanceof StreamInfoItem s) {
                     results.add(toRow(s));
                 }
             }
 
-            Map<String, Object> body = new LinkedHashMap<>();
-            body.put("success", true);
-            body.put("query", q.trim());
-            body.put("filter", filter);
-            body.put("count", results.size());
-            body.put("data", results);
-            return ResponseEntity.ok(body);
-
-        } catch (SignInConfirmNotBotException e) {
-            log.warn("Source blocked this IP for search '{}'", q);
-            return error(HttpStatus.SERVICE_UNAVAILABLE, "SOURCE_BLOCKED",
-                    "The source temporarily blocked this server. Try again later.");
-        } catch (ExtractionException e) {
-            log.error("Search extraction failed for '{}'", q, e);
-            return error(HttpStatus.BAD_GATEWAY, "EXTRACTION_FAILED", "Could not complete the search.");
-        } catch (IOException e) {
-            log.error("Network error during search '{}'", q, e);
-            return error(HttpStatus.BAD_GATEWAY, "NETWORK_ERROR", "Network error while contacting the source.");
-        }
-    }
-
-    private static Map<String, Object> toRow(StreamInfoItem s) {
-        String url = s.getUrl();
-        Matcher m = VIDEO_ID.matcher(url == null ? "" : url);
-        String videoId = m.find() ? m.group(1) : null;
-
-        String thumbnail = s.getThumbnails().stream()
-                .max(Comparator.comparingInt(Image::getHeight))
-                .map(Image::getUrl)
-                .orElse(null);
-
-        StreamType type = s.getStreamType();
-        boolean isLive = type == StreamType.LIVE_STREAM || type == StreamType.AUDIO_LIVE_STREAM;
-
-        Map<String, Object> row = new LinkedHashMap<>();
-        row.put("videoId", videoId);
-        row.put("title", s.getName());
-        row.put("uploader", s.getUploaderName());
-        row.put("thumbnail", thumbnail);
-        row.put("duration", s.getDuration() >= 0 ? s.getDuration() : null);
-        row.put("viewCount", s.getViewCount() >= 0 ? s.getViewCount() : null);
-        row.put("uploadDate", s.getTextualUploadDate());
-        row.put("isLive", isLive);
-        row.put("url", url);
-        return row;
-    }
-
-    private static ResponseEntity<Map<String, Object>> error(HttpStatus status, String code, String message) {
-        Map<String, Object> err = new LinkedHashMap<>();
-        err.put("code", code);
-        err.put("message", message);
-        Map<String, Object> body = new LinkedHashMap<>();
-        body.put("success", false);
-        body.put("error", err);
-        return ResponseEntity.status(status).body(body);
-    }
-}
+            boolean hasMore = hasMore(next);
+            Map<String, Object> pagination = new LinkedHashMap<>();
