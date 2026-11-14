@@ -12,6 +12,8 @@ import org.schabi.newpipe.extractor.exceptions.ContentNotAvailableException;
 import org.schabi.newpipe.extractor.exceptions.ExtractionException;
 import org.schabi.newpipe.extractor.stream.AudioStream;
 import org.schabi.newpipe.extractor.stream.StreamInfo;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -21,6 +23,8 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 public class StreamController {
 
+    
+    private static final Logger log = LoggerFactory.getLogger(StreamController.class);
     private static final Pattern VIDEO_ID = Pattern.compile("^[A-Za-z0-9_-]{11}$");
     private static final Pattern EXPIRE = Pattern.compile("[?&]expire=(\\d+)");
 
@@ -63,11 +67,14 @@ public class StreamController {
             body.put("audioStreams", streams);
             return ResponseEntity.ok(body);
 
-        } catch (ContentNotAvailableException e) {
+                } catch (ContentNotAvailableException e) {
+            log.warn("Video unavailable: {}", videoId, e);
             return error(HttpStatus.NOT_FOUND, "VIDEO_UNAVAILABLE", "The requested video is unavailable.");
         } catch (ExtractionException e) {
+            log.error("Audio extraction failed for {}", videoId, e);
             return error(HttpStatus.BAD_GATEWAY, "EXTRACTION_FAILED", "Could not extract this video.");
         } catch (IOException e) {
+            log.error("Network error for {}", videoId, e);
             return error(HttpStatus.BAD_GATEWAY, "NETWORK_ERROR", "Network error while contacting the source.");
         }
     }
