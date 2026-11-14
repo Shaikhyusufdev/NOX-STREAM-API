@@ -32,8 +32,8 @@ public class NewPipeDownloader extends Downloader {
         HttpRequest.Builder builder = HttpRequest.newBuilder()
                 .uri(URI.create(request.url()))
                 .timeout(Duration.ofSeconds(20))
-                .method(request.httpMethod(), body)
-                .header("User-Agent", USER_AGENT);
+                .method(request.httpMethod(), body);
+                
 
         for (Map.Entry<String, List<String>> e : request.headers().entrySet()) {
             String name = e.getKey();
