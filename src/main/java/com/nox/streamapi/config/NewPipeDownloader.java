@@ -33,17 +33,21 @@ public class NewPipeDownloader extends Downloader {
                 .uri(URI.create(request.url()))
                 .timeout(Duration.ofSeconds(20))
                 .method(request.httpMethod(), body);
-                
 
         for (Map.Entry<String, List<String>> e : request.headers().entrySet()) {
             String name = e.getKey();
             if (name.equalsIgnoreCase("Content-Length") || name.equalsIgnoreCase("Host")) {
                 continue;
             }
-            builder.removeHeader(name);
             for (String value : e.getValue()) {
                 builder.header(name, value);
             }
+        }
+
+        boolean hasUserAgent = request.headers().keySet().stream()
+                .anyMatch(k -> k.equalsIgnoreCase("User-Agent"));
+        if (!hasUserAgent) {
+            builder.header("User-Agent", USER_AGENT);
         }
 
         HttpResponse<String> response;
